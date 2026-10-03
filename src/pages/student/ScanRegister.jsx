@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Html5Qrcode } from 'html5-qrcode'
-import { CameraOff, CheckCircle2, Clock, Keyboard, ScanLine, XCircle } from 'lucide-react'
+import { Camera, CameraOff, CheckCircle2, Clock, Keyboard, ScanLine, XCircle } from 'lucide-react'
 import { api, USE_MOCK } from '../../api/client'
 import { fmtDateTime } from '../../lib/format'
 import { Button, Card, CategoryBadge, Input, PageHeader } from '../../components/ui'
 
 const READER_ID = 'qr-reader'
+const IDLE_TIMEOUT_MS = 60000
 
 export default function ScanRegister() {
   const [result, setResult] = useState(null) // { ok, event?, error? }
   const [busy, setBusy] = useState(false)
   const [manual, setManual] = useState('')
-  const [scanning, setScanning] = useState(true)
+  const [scanning, setScanning] = useState(false)
 
   const submit = async (text) => {
     if (busy) return
@@ -31,7 +32,7 @@ export default function ScanRegister() {
   const reset = () => {
     setResult(null)
     setManual('')
-    setScanning(true)
+    setScanning(false)
   }
 
   return (
@@ -42,7 +43,21 @@ export default function ScanRegister() {
         <ResultCard result={result} onRetry={reset} />
       ) : (
         <>
-          {scanning && <Scanner onScan={submit} busy={busy} />}
+          {scanning ? (
+            <Scanner onScan={submit} busy={busy} onStop={() => setScanning(false)} />
+          ) : (
+            <Card className="flex flex-col items-center p-8 text-center">
+              <span className="grid size-16 place-items-center rounded-2xl bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-300">
+                <ScanLine className="size-8" />
+              </span>
+              <p className="mt-4 text-sm text-slate-500">
+                At the venue? Start the camera and point it at the event QR code.
+              </p>
+              <Button size="lg" className="mt-5" onClick={() => setScanning(true)}>
+                <Camera className="size-5" /> Start camera
+              </Button>
+            </Card>
+          )}
           {USE_MOCK && (
             <Card className="mt-5 p-5">
               <div className="flex items-center gap-2 text-sm font-semibold">
@@ -71,12 +86,14 @@ export default function ScanRegister() {
   )
 }
 
-function Scanner({ onScan, busy }) {
+function Scanner({ onScan, busy, onStop }) {
   const [camError, setCamError] = useState(null)
   const onScanRef = useRef(onScan)
+  const onStopRef = useRef(onStop)
   useEffect(() => {
     onScanRef.current = onScan
-  }, [onScan])
+    onStopRef.current = onStop
+  }, [onScan, onStop])
 
   useEffect(() => {
     const scanner = new Html5Qrcode(READER_ID, { verbose: false })
@@ -97,11 +114,25 @@ function Scanner({ onScan, busy }) {
         if (!stopped) setCamError(err?.message || String(err))
       })
 
+    // Turn the camera off if nothing is scanned for a while or the app is backgrounded.
+    const idle = setTimeout(() => onStopRef.current(), IDLE_TIMEOUT_MS)
+    const onHidden = () => document.hidden && onStopRef.current()
+    document.addEventListener('visibilitychange', onHidden)
+
     return () => {
       stopped = true
-      started.then(() => scanner.isScanning && scanner.stop().catch(() => {})).finally(() => {
-        try { scanner.clear() } catch { /* already cleared */ }
-      })
+      clearTimeout(idle)
+      document.removeEventListener('visibilitychange', onHidden)
+      // Release the camera even if start() is still pending when we unmount.
+      started
+        .then(() => scanner.isScanning && scanner.stop())
+        .catch(() => {})
+        .finally(() => {
+          document.querySelectorAll(`#${READER_ID} video`).forEach((v) => {
+            v.srcObject?.getTracks().forEach((t) => t.stop())
+          })
+          try { scanner.clear() } catch { /* already cleared */ }
+        })
     }
   }, [])
 
@@ -122,8 +153,13 @@ function Scanner({ onScan, busy }) {
           <div className="absolute inset-0 grid place-items-center bg-slate-950/70 font-semibold text-white">Verifying…</div>
         )}
       </div>
-      <div className="flex items-center gap-2 p-4 text-sm text-slate-500">
-        <ScanLine className="size-4 text-brand-600" /> Scanning for a SportSync event code…
+      <div className="flex items-center justify-between gap-2 p-4 text-sm text-slate-500">
+        <span className="flex items-center gap-2">
+          <ScanLine className="size-4 text-brand-600" /> Scanning… turns off after 1 minute
+        </span>
+        <Button variant="secondary" size="sm" onClick={onStop}>
+          <CameraOff className="size-4" /> Stop
+        </Button>
       </div>
     </Card>
   )
